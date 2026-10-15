@@ -46,7 +46,7 @@ param(
     [string] $FabricQueryUri,
     [int]    $FabricCapacityUnits = 2,
     [string] $DataExplorerName,
-    [string] $DataExplorerSku = 'Dev (No SLA)_Standard_E2a_v4',
+    [string] $DataExplorerSku = 'Dev(No SLA)_Standard_E2a_v4',
 
     [string[]] $ScopesToMonitor = @(),
     [switch] $ManualExports,          # cria exports via New-FinOpsCostExport em vez de managed exports
@@ -475,10 +475,27 @@ elseif ($ScopesToMonitor.Count -gt 0) {
         if ($exportsOk) {
             # Executa os exports agora (o agendamento normal so roda de madrugada) e dispara o historico.
             Write-Host '  Executando os exports e o backfill do historico...' -ForegroundColor Yellow
-            $daily = Invoke-HubPipeline -Name 'config_StartExportProcess' -Parameters @{ Schedule = 'Daily' } -TimeoutMinutes 20
-            Write-Host "    config_StartExportProcess (Daily): $($daily.Status)" -ForegroundColor DarkGray
-            $backfill = Invoke-HubPipeline -Name 'config_RunBackfillJob' -NoWait
-            Write-Host "    config_RunBackfillJob disparado (run $($backfill.RunId)); ele roda em segundo plano." -ForegroundColor DarkGray
+            $jobs = @(@{ Name = 'config_StartExportProcess'; Parameters = @{ Recurrence = 'Daily' }; Label = 'Daily' })
+            $now = [DateTime]::UtcNow
+            $monthStart = [DateTime]::new($now.Year, $now.Month, 1)
+            for ($month = 1; $month -le $BackfillMonths; $month++) {
+                $start = $monthStart.AddMonths(-$month)
+                $jobs += @{
+                    Name = 'config_RunBackfillJob'
+                    Parameters = @{ StartDate = $start.ToString('yyyy-MM-dd'); EndDate = $start.AddMonths(1).AddDays(-1).ToString('yyyy-MM-dd') }
+                    Label = $start.ToString('yyyy-MM')
+                }
+            }
+            foreach ($job in $jobs) {
+                for ($attempt = 1; $attempt -le [Math]::Max(1, $ExportRetries); $attempt++) {
+                    $run = Invoke-HubPipeline -Name $job.Name -Parameters $job.Parameters -TimeoutMinutes 20
+                    if ($run.Status -eq 'Succeeded') { break }
+                    Write-Warning "$($job.Name) ($($job.Label)): $($run.Status). $($run.Message)"
+                    if ($attempt -lt $ExportRetries) { Start-Sleep -Seconds 180 }
+                }
+                if ($run.Status -ne 'Succeeded') { throw "$($job.Name) ($($job.Label)) nao concluiu com sucesso. Run: $($run.RunId)." }
+                Write-Host "    $($job.Name) ($($job.Label)): $($run.Status)" -ForegroundColor DarkGray
+            }
             Write-Host '  Os primeiros arquivos aparecem no container msexports em minutos e no ingestion logo depois.' -ForegroundColor Green
         }
     }
@@ -652,6 +669,15 @@ if ($Mode -eq 'Fabric') {
     Write-Host "    2. No banco Hub, rode:                    .add database Hub admins ('aadapp=$($hubAdf.Identity.PrincipalId)')"
     Write-Host '    3. Rode kql/01-multicloud-functions.kql no banco Hub (funcoes CostsMulticloud, CostsAllocated, CostAnomalies, RecommendationsAll).'
     Write-Host '    4. Importe dashboards/finops-multicloud-realtime-dashboard.json (Real-Time Dashboard > Manage > Replace with file) e aponte a fonte para o banco Hub.'
+}
+elseif ($Mode -eq 'DataExplorer') {
+    Write-Host ''
+    Write-Host '  AZURE DATA EXPLORER:' -ForegroundColor Cyan
+    Write-Host "    Cluster: $DataExplorerName. Consulte Costs_v1_2() no banco Hub."
+    Write-Host '    O storage do hub e a area intermediaria de ingestao, nao a fonte de consulta.'
+    Write-Host '    Power BI: use PowerBI-kql.zip e a Query URI do cluster, com o banco Hub.'
+    Write-Host '    Interface web: use -DataBackend Kusto -KustoQueryUri <Query URI> -KustoDatabase Hub.'
+    Write-Host '    Conceda Viewer nos bancos Hub e Ingestion a identidade que consulta os dados.'
 }
 else {
     # ----------------------------------------------------------------------------------

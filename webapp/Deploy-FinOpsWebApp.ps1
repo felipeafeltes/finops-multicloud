@@ -819,9 +819,15 @@ else {
             # supports_no_wait): nada sai no stdout, e "--query runId" devolve vazio. O id da execucao so aparece
             # no aviso "Queued a build with ID: <id>", em stderr, que "--only-show-errors" esconderia. Por isso este
             # comando roda SEM --only-show-errors e o id e lido do aviso; se faltar, vem da lista de execucoes.
-            $saidaBuild = & az acr build --registry $registryName --image $imagem --file Dockerfile --platform linux `
-                            --no-logs --no-wait -o none $stage 2>&1
-            $codigoBuild = $LASTEXITCODE
+            Push-Location $stage
+            try {
+                $saidaBuild = & az acr build --registry $registryName --image $imagem --file Dockerfile --platform linux `
+                                --no-logs --no-wait -o none . 2>&1
+                $codigoBuild = $LASTEXITCODE
+            }
+            finally {
+                Pop-Location
+            }
             $linhasBuild = @($saidaBuild) | ForEach-Object { "$_".Trim() } | Where-Object { $_ }
             $linhasBuild | ForEach-Object { Write-Host "    $_" -ForegroundColor DarkGray }
             $textoBuild = $linhasBuild -join "`n"
